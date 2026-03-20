@@ -6,70 +6,81 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Mishka-GDI-Back/config"
-	"github.com/Mishka-GDI-Back/db"
-	"github.com/Mishka-GDI-Back/handler"
-	"github.com/Mishka-GDI-Back/repository"
-	"github.com/Mishka-GDI-Back/router"
-	"github.com/Mishka-GDI-Back/service"
+	"github.com/Mishka-GDI-Back/application"
+	"github.com/Mishka-GDI-Back/infrastructure/config"
+	"github.com/Mishka-GDI-Back/infrastructure/database"
+	"github.com/Mishka-GDI-Back/infrastructure/http/handler"
+	"github.com/Mishka-GDI-Back/infrastructure/http/router"
+	"github.com/Mishka-GDI-Back/infrastructure/persistence"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// Cargar configuración
 	cfg := config.NewConfig()
-
-	// Configurar modo de Gin
 	gin.SetMode(cfg.GinMode)
 
 	log.Printf("🚀 Iniciando Mishka Inventory API en puerto %s", cfg.Port)
-	log.Printf("🔗 Conectando a base de datos en: %s", cfg.PostgresURI)
 
-	// Conectar a la base de datos
-	database, err := db.NewPostgresConnection(cfg.PostgresURI)
+	db, err := database.NewPostgresConnection(cfg.PostgresURI)
 	if err != nil {
 		log.Fatalf("❌ Error al conectar con la base de datos: %v", err)
 	}
-	defer database.Close()
+	defer db.Close()
 
-	// Inicializar repositorios
-	categoriaRepo := repository.NewCategoriaRepository(database)
-	productoRepo := repository.NewProductoRepository(database)
-	entradaRepo := repository.NewEntradaProductoRepository(database)
-	salidaRepo := repository.NewSalidaProductoRepository(database)
+	// ── Repositorios (capa de infraestructura / persistencia) ──────────────
+	categoriaRepo := persistence.NewCategoriaRepository(db)
+	productoRepo  := persistence.NewProductoRepository(db)
+	entradaRepo   := persistence.NewEntradaProductoRepository(db)
+	salidaRepo    := persistence.NewSalidaProductoRepository(db)
+	controlRepo   := persistence.NewControlDiarioRepository(db)
+	resumenRepo   := persistence.NewResumenMensualRepository(db)
+	usuarioRepo   := persistence.NewUsuarioRepository(db)
+	reportesRepo  := persistence.NewReportesRepository(db)
+	alertasRepo   := persistence.NewAlertasRepository(db)
 
-	// Inicializar servicios
-	categoriaService := service.NewCategoriaService(categoriaRepo)
-	productoService := service.NewProductoService(productoRepo, categoriaRepo)
-	entradaService := service.NewEntradaProductoService(entradaRepo, productoRepo)
-	salidaService := service.NewSalidaProductoService(salidaRepo, productoRepo)
+	// ── Servicios (capa de aplicación) ─────────────────────────────────────
+	categoriaService := application.NewCategoriaService(categoriaRepo)
+	productoService  := application.NewProductoService(productoRepo, categoriaRepo)
+	entradaService   := application.NewEntradaProductoService(entradaRepo, productoRepo)
+	salidaService    := application.NewSalidaProductoService(salidaRepo, productoRepo)
+	controlService   := application.NewControlDiarioService(controlRepo)
+	resumenService   := application.NewResumenMensualService(resumenRepo)
+	authService      := application.NewAuthService(usuarioRepo)
+	reportesService  := application.NewReportesService(reportesRepo)
+	alertasService   := application.NewAlertasService(alertasRepo)
 
-	// Inicializar handlers
+	// ── Handlers (capa de infraestructura / HTTP) ───────────────────────────
 	categoriaHandler := handler.NewCategoriaHandler(categoriaService)
-	productoHandler := handler.NewProductoHandler(productoService)
-	entradaHandler := handler.NewEntradaHandler(entradaService)
-	salidaHandler := handler.NewSalidaHandler(salidaService)
+	productoHandler  := handler.NewProductoHandler(productoService)
+	entradaHandler   := handler.NewEntradaHandler(entradaService)
+	salidaHandler    := handler.NewSalidaHandler(salidaService)
+	controlHandler   := handler.NewControlDiarioHandler(controlService)
+	resumenHandler   := handler.NewResumenMensualHandler(resumenService)
+	authHandler      := handler.NewAuthHandler(authService)
+	reportesHandler  := handler.NewReportesHandler(reportesService)
+	alertasHandler   := handler.NewAlertasHandler(alertasService)
 
-	// Configurar router
-	appRouter := router.NewRouter(categoriaHandler, productoHandler, entradaHandler, salidaHandler)
+	// ── Router ──────────────────────────────────────────────────────────────
+	appRouter := router.NewRouter(
+		categoriaHandler, productoHandler, entradaHandler, salidaHandler,
+		controlHandler, resumenHandler, authHandler, reportesHandler, alertasHandler,
+	)
 	ginRouter := appRouter.SetupRoutes()
 
-	// Canal para capturar señales del sistema
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// Ejecutar servidor en una goroutine
 	go func() {
 		log.Printf("✅ Servidor iniciado en http://localhost:%s", cfg.Port)
-		log.Printf("📚 Health check disponible en http://localhost:%s/health", cfg.Port)
-		log.Printf("🔧 API disponible en http://localhost:%s/api", cfg.Port)
+		log.Printf("📚 Health check: http://localhost:%s/health", cfg.Port)
+		log.Printf("🔐 Login: POST http://localhost:%s/api/auth/login", cfg.Port)
+		log.Printf("🔧 API: http://localhost:%s/api", cfg.Port)
 
 		if err := ginRouter.Run(":" + cfg.Port); err != nil {
 			log.Fatalf("❌ Error al iniciar el servidor: %v", err)
 		}
 	}()
 
-	// Esperar señal de terminación
 	<-quit
 	log.Println("🛑 Cerrando servidor...")
 	log.Println("👋 Servidor cerrado exitosamente")
